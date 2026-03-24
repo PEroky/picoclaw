@@ -1,3 +1,4 @@
+# .github/workflows/build.yml
 name: Build All (including Docker)
 
 on:
@@ -9,9 +10,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Modify port for Hugging Face
         run: |
@@ -19,7 +24,7 @@ jobs:
           echo "Port changed to 7860"
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
@@ -27,25 +32,54 @@ jobs:
         run: make build-all
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Convert repository name to lowercase
+        id: lowercase
+        run: |
+          # 将仓库名转换为小写
+          LOWERCASE_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "lowercase_repo=$LOWERCASE_REPO" >> $GITHUB_OUTPUT
+          echo "Original: ${{ github.repository }}"
+          echo "Lowercase: $LOWERCASE_REPO"
+
       - name: Build and push Docker image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile.launcher
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}-hf:latest
-            ghcr.io/${{ github.repository }}-hf:${{ github.ref_name }}
+            ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:latest
+            ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          # 测试构建的镜像
+          IMAGE_NAME="ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:latest"
+          echo "Testing image: $IMAGE_NAME"
+          
+          docker pull $IMAGE_NAME
+          docker run -d --name test-picoclaw -p 7860:7860 $IMAGE_NAME
+          sleep 10
+          
+          if curl -s http://localhost:7860 > /dev/null; then
+            echo "✅ Success! PicoClaw is running on port 7860"
+            echo "Access at: http://localhost:7860"
+          else
+            echo "❌ Failed to start"
+            docker logs test-picoclaw
+            exit 1
+          fi
+          
+          docker rm -f test-picoclaw
