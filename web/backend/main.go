@@ -50,7 +50,7 @@ var (
 )
 
 func main() {
-	port := flag.String("port", "18800", "Port to listen on")
+	port := flag.String("port", "7860", "Port to listen on")
 	public := flag.Bool("public", false, "Listen on all interfaces (0.0.0.0) instead of localhost only")
 	noBrowser = flag.Bool("no-browser", false, "Do not auto-open browser on startup")
 	lang := flag.String("lang", "", "Language: en (English) or zh (Chinese). Default: auto-detect from system locale")
