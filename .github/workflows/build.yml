@@ -1,8 +1,10 @@
-name: build
+name: Build All (including Docker)
 
 on:
   push:
     branches: [ "main" ]
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -11,6 +13,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Modify port for Hugging Face
+        run: |
+          sed -i 's/"port", "18800"/"port", "7860"/g' web/backend/main.go
+          echo "Port changed to 7860"
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
@@ -18,3 +25,27 @@ jobs:
 
       - name: Build
         run: make build-all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./docker/Dockerfile.launcher
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-hf:latest
+            ghcr.io/${{ github.repository }}-hf:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
