@@ -1,11 +1,15 @@
-# .github/workflows/build.yml
-name: Build All (including Docker)
+# .github/workflows/hf-build.yml
+name: Build for Hugging Face
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
     tags:
       - 'v*'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
   build:
@@ -14,72 +18,94 @@ jobs:
       contents: read
       packages: write
     
+    outputs:
+      image_name: ${{ steps.setup.outputs.image_name }}
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Modify port for Hugging Face
+      
+      - name: Setup variables
+        id: setup
         run: |
+          # 转换为小写
+          LOWERCASE_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image_name=${LOWERCASE_REPO}-hf" >> $GITHUB_OUTPUT
+          echo "Repository: ${{ github.repository }}"
+          echo "Lowercase: ${LOWERCASE_REPO}"
+          echo "Image: ${REGISTRY}/${LOWERCASE_REPO}-hf"
+      
+      - name: Modify port configuration
+        run: |
+          echo "Changing default port from 18800 to 7860..."
           sed -i 's/"port", "18800"/"port", "7860"/g' web/backend/main.go
-          echo "Port changed to 7860"
-
+          sed -i 's/18800/7860/g' web/backend/api/gateway_host.go 2>/dev/null || true
+          echo "Port modification complete"
+      
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Build
-        run: make build-all
-
+      
+      - name: Setup Node.js and pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable && corepack prepare pnpm@latest --activate
+      
+      - name: Build frontend
+        run: |
+          cd web/frontend && pnpm install && pnpm build:backend
+      
+      - name: Build binaries
+        run: |
+          make build-all
+          echo "Build complete. Binaries in build/:"
+          ls -lh build/
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
+      
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Convert repository name to lowercase
-        id: lowercase
-        run: |
-          # 将仓库名转换为小写
-          LOWERCASE_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          echo "lowercase_repo=$LOWERCASE_REPO" >> $GITHUB_OUTPUT
-          echo "Original: ${{ github.repository }}"
-          echo "Lowercase: $LOWERCASE_REPO"
-
+      
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.launcher
+          file: ./docker/Dockerfile.goreleaser.launcher  # 修复这里！
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:latest
-            ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ steps.setup.outputs.image_name }}:latest
+            ${{ env.REGISTRY }}/${{ steps.setup.outputs.image_name }}:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Test Docker image
+      
+      - name: Test the built image
         run: |
-          # 测试构建的镜像
-          IMAGE_NAME="ghcr.io/${{ steps.lowercase.outputs.lowercase_repo }}-hf:latest"
-          echo "Testing image: $IMAGE_NAME"
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ steps.setup.outputs.image_name }}:latest"
+          echo "Testing image: ${IMAGE_NAME}"
           
-          docker pull $IMAGE_NAME
-          docker run -d --name test-picoclaw -p 7860:7860 $IMAGE_NAME
+          docker pull ${IMAGE_NAME}
+          
+          # 运行容器
+          docker run -d --name picoclaw-test -p 7860:7860 ${IMAGE_NAME}
           sleep 10
           
-          if curl -s http://localhost:7860 > /dev/null; then
-            echo "✅ Success! PicoClaw is running on port 7860"
-            echo "Access at: http://localhost:7860"
+          # 健康检查
+          if curl -s -f http://localhost:7860 > /dev/null; then
+            echo "✅ Web UI is accessible on port 7860"
           else
-            echo "❌ Failed to start"
-            docker logs test-picoclaw
+            echo "❌ Web UI not accessible"
+            docker logs picoclaw-test
             exit 1
           fi
           
-          docker rm -f test-picoclaw
+          # 清理
+          docker rm -f picoclaw-test
+          echo "Test completed successfully!"
